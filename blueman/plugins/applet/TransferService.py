@@ -6,10 +6,12 @@ from __future__ import unicode_literals
 import cgi
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk
+from gi.repository import GObject, GLib, Gtk
 from datetime import datetime
 import os
 import shutil
+import subprocess
+import threading
 from blueman.bluez import obex
 from blueman.Functions import dprint, get_icon, launch
 from blueman.gui.Notification import Notification
@@ -19,6 +21,33 @@ from blueman.main.Config import Config
 
 import dbus
 import dbus.service
+
+
+@GObject.type_register
+class CommandRunner(threading.Thread, GObject.Object):
+
+    __gsignals__ = {
+        'ended': (
+            GObject.SIGNAL_RUN_LAST,
+            None,
+            (str, object)
+        )
+    }
+
+    def __init__(self, command, filename, path):
+        threading.Thread.__init__(self)
+        GObject.Object.__init__(self)
+        self.setDaemon(True)
+        self.command = command
+        self.filename = filename
+        self.path = path
+
+    def run(self):
+        try:
+            subprocess.check_call([self.command, self.path])
+            GObject.idle_add(lambda: self.emit("ended", self.filename, None))
+        except Exception as e:
+            GObject.idle_add(lambda: self.emit("ended", self.filename, e))
 
 
 class _Agent:
@@ -253,6 +282,32 @@ class TransferService(AppletPlugin):
                 self._silent_transfers -= 1
 
         del self._agent.transfers[transfer_path]
+
+        if success:
+            command_to_run = self._config["process-command"]
+            # We get bytes from pygobject under python 2.7
+            if hasattr(command_to_run, "upper",) and hasattr(command_to_run, "decode"):
+                command_to_run = command_to_run.decode("UTF-8")
+
+            if command_to_run:
+                runner = CommandRunner(command_to_run, filename, dest)
+                runner.connect("ended", self._on_process_completed)
+                runner.start()
+
+    def _on_process_completed(self, runner, filename, exception):
+        if exception is None:
+            n = Notification(_("File processed"),
+                             _("File %(0)s successfully processed") % {
+                                 "0": "<b>" + cgi.escape(filename) + "</b>",},
+                             **self.__notify_kwargs())
+            n.show()
+        else:
+            Notification(_("Processing failed"),
+                         _("Processing of file %(0)s failed: %(1)s") % {
+                             "0": "<b>" + cgi.escape(filename) + "</b>",
+                             "1": "<b>" + cgi.escape(str(success)) + "</b>"},
+                         **self.__notify_kwargs())
+            n.show()
 
     def _on_session_removed(self, _manager, _session_path):
         if self._silent_transfers == 0:
