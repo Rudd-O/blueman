@@ -3,6 +3,7 @@ from __future__ import division
 from __future__ import absolute_import
 from __future__ import unicode_literals
 
+import cgi
 import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
@@ -95,17 +96,16 @@ class _Agent:
         # This device was neither allowed nor is it trusted -> ask for confirmation
         if address not in self._allowed_devices and not (self._config['opp-accept'] and trusted):
             self._notification = Notification(_("Incoming file over Bluetooth"),
-                _("Incoming file %(0)s from %(1)s") % {"0": "<b>" + filename + "</b>",
-                                                       "1": "<b>" + name + "</b>"},
+                _("Incoming file %(0)s from %(1)s") % {"0": "<b>" + cgi.escape(filename) + "</b>",
+                                                       "1": "<b>" + cgi.escape(name) + "</b>"},
                 30000, [["accept", _("Accept"), "help-about"], ["reject", _("Reject"), "help-about"]], self._on_action,
-                pixbuf=get_icon("blueman", 48), status_icon=status_icon)
+                **self.__notify_kwargs())
         # Device is trusted or was already allowed, larger file -> display a notification, but auto-accept
         elif size > 350000:
             self._notification = Notification(_("Receiving file"),
-                _("Receiving file %(0)s from %(1)s") % {"0": "<b>" + filename + "</b>",
-                                                        "1": "<b>" + name + "</b>"},
-                pixbuf=get_icon("blueman", 48), status_icon=status_icon)
-            self._on_action(self._notification, 'accept')
+                _("Receiving file %(0)s from %(1)s") % {"0": "<b>" + cgi.escape(filename) + "</b>",
+                                                        "1": "<b>" + cgi.escape(name) + "</b>"},
+                **self.__notify_kwargs())
         # Device is trusted or was already allowed. very small file -> auto-accept and transfer silently
         else:
             self._notification = None
@@ -198,6 +198,14 @@ class TransferService(AppletPlugin):
             n.add_action("open", name, on_open, None)
             n.show()
 
+    def __notify_kwargs(self):
+        kwargs = {"pixbuf": get_icon("blueman", 48)}
+        try:
+            kwargs["pos_hint"] = self.Applet.Plugins.StatusIcon.geometry
+        except AttributeError:
+            pass
+        return kwargs
+
     def _on_transfer_completed(self, _manager, transfer_path, success):
         try:
             attributes = self._agent.transfers[transfer_path]
@@ -218,27 +226,26 @@ class TransferService(AppletPlugin):
             now = datetime.now()
             filename = "%s_%s" % (now.strftime("%Y%m%d%H%M%S"), filename)
             dprint("Destination file exists, renaming to: %s" % filename)
-
-        shutil.move(src, dest)
+            dest = os.path.join(dest_dir, filename)
 
         try:
-            status_icon = self._applet.Plugins.StatusIcon
-        except:
-            status_icon = None
+            shutil.move(src, dest)
+        except Exception as e:
+            success = False
 
         if success:
             n = Notification(_("File received"),
                              _("File %(0)s from %(1)s successfully received") % {
-                                 "0": "<b>" + filename + "</b>",
-                                 "1": "<b>" + attributes['name'] + "</b>"},
-                             pixbuf=get_icon("blueman", 48), status_icon=status_icon)
+                                 "0": "<b>" + cgi.escape(filename) + "</b>",
+                                 "1": "<b>" + cgi.escape(attributes['name']) + "</b>"},
+                             **self.__notify_kwargs())
             self._add_open(n, "Open", dest)
         elif not success:
             Notification(_("Transfer failed"),
                          _("Transfer of file %(0)s failed") % {
-                             "0": "<b>" + filename + "</b>",
-                             "1": "<b>" + attributes['name'] + "</b>"},
-                         pixbuf=get_icon("blueman", 48), status_icon=status_icon)
+                             "0": "<b>" + cgi.escape(filename) + "</b>",
+                             "1": "<b>" + cgi.escape(attributes['name']) + "</b>"},
+                         **self.__notify_kwargs())
 
             if attributes['size'] > 350000:
                 self._normal_transfers -= 1
@@ -251,16 +258,11 @@ class TransferService(AppletPlugin):
         if self._silent_transfers == 0:
             return
 
-        try:
-            status_icon = self._applet.Plugins.StatusIcon
-        except:
-            status_icon = None
-
         if self._normal_transfers == 0:
             n = Notification(_("Files received"),
                              ngettext("Received %d file in the background", "Received %d files in the background",
                                       self._silent_transfers) % self._silent_transfers,
-                             pixbuf=get_icon("blueman", 48), status_icon=status_icon)
+                             **self.__notify_kwargs())
 
             self._add_open(n, "Open Location", self._config["shared-path"])
         else:
@@ -268,5 +270,5 @@ class TransferService(AppletPlugin):
                              ngettext("Received %d more file in the background",
                                       "Received %d more files in the background",
                                       self._silent_transfers) % self._silent_transfers,
-                             pixbuf=get_icon("blueman", 48), status_icon=status_icon)
+                             **self.__notify_kwargs())
             self._add_open(n, "Open Location", self._config["shared-path"])
